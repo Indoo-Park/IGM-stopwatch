@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>우주 스탑워치</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: #03040a;
+    color: #e8ecff;
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+  }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+  .legend {
+    position: fixed; top: 16px; left: 16px;
+    font-size: 12px; line-height: 1.9; color: #9aa3c7;
+  }
+  .legend i {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 6px; vertical-align: middle;
+  }
+
+  .laps-box {
+    position: fixed; top: 16px; right: 16px; width: 190px;
+    max-height: 40vh; overflow-y: auto;
+    font-size: 13px; color: #c7cdf0;
+  }
+  .laps-box .lh { font-size: 12px; color: #9aa3c7; margin-bottom: 6px; }
+  .laps-box ol { list-style: none; margin: 0; padding: 0; }
+  .laps-box li {
+    display: flex; justify-content: space-between;
+    padding: 5px 0; border-top: 1px solid rgba(255,255,255,0.08);
+    font-variant-numeric: tabular-nums;
+  }
+  .laps-box li.best { color: #ffd36b; }
+  .laps-box li.worst { color: #7aa8ff; }
+
+  .panel {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 0 16px 20px; text-align: center;
+  }
+  .name {
+    height: 20px; font-size: 14px; color: #ffd9a0; letter-spacing: 1px;
+    transition: opacity 0.6s;
+  }
+  #digits {
+    position: static; display: block;
+    width: min(560px, 100%); height: 100px; margin: 4px auto 0;
+  }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px;
+    overflow: hidden; clip: rect(0 0 0 0);
+  }
+  .buttons {
+    display: flex; gap: 10px; justify-content: center; margin: 14px 0 10px;
+  }
+  button {
+    width: 120px; height: 48px; border-radius: 24px;
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.04); color: #e8ecff;
+    font-size: 15px; font-weight: 600; cursor: pointer;
+    backdrop-filter: blur(6px);
+  }
+  button:disabled { opacity: 0.35; cursor: default; }
+  button.primary { background: #3b6cff; border-color: #3b6cff; }
+  button.stop { background: #e0485a; border-color: #e0485a; }
+  button.icon { width: 48px; }
+  button.icon.off { opacity: 0.4; text-decoration: line-through; }
+  .hint { font-size: 11px; color: #6c7499; }
+
+  @media (max-width: 640px) {
+    .laps-box { width: 130px; max-height: 22vh; font-size: 12px; }
+    button { width: 100px; }
+  }
+</style>
+</head>
+<body>
+  <canvas id="sky"></canvas>
+
+  <div class="legend">
+    <div><i style="background:#ffb547"></i>시 (12시간 공전)</div>
+    <div><i style="background:#b48cff"></i>분 (1시간 공전)</div>
+    <div><i style="background:#5fe0ff"></i>초 (1분 공전) · 달 1초</div>
+    <div><i style="background:#fff"></i>랩 = 별자리의 별</div>
+  </div>
+
+  <div class="laps-box" id="lapsBox" hidden>
+    <div class="lh">랩 기록</div>
+    <ol id="laps"></ol>
+  </div>
+
+  <div class="panel">
+    <div class="name" id="name"></div>
+    <canvas id="digits"></canvas>
+    <div class="sr-only" id="display" aria-live="off">00:00.00</div>
+    <div class="buttons">
+      <button id="lapReset" disabled>랩</button>
+      <button id="startStop" class="primary">시작</button>
+      <button id="sound" class="icon" title="소리 켜기/끄기">♪</button>
+    </div>
+    <div class="hint">Space 시작/정지 · L 랩 · R 리셋 · M 소리</div>
+  </div>
+
+<script>
+  const cv = document.getElementById('sky');
+  const ctx = cv.getContext('2d');
+  const display = document.getElementById('display');
+  const nameEl = document.getElementById('name');
+  const startStopBtn = document.getElementById('startStop');
+  const lapResetBtn = document.getElementById('lapReset');
+  const soundBtn = document.getElementById('sound');
+  const lapList = document.getElementById('laps');
+  const lapsBox = document.getElementById('lapsBox');
+
+  const TAU = Math.PI * 2;
+  const panel = document.querySelector('.panel');
+
+  let W, H, cx, cy, R;
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const PANEL_H = panel.offsetHeight + 24;
+    W = innerWidth; H = innerHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx = W / 2;
+    cy = (H - PANEL_H) / 2 + 10;
+    R = Math.max(70, Math.min(W / 2 - 20, (H - PANEL_H) / 2 - 10));
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // 배경 별
+  const bgStars = Array.from({ length: 240 }, () => ({
+    x: Math.random(), y: Math.random(),
+    r: Math.random() * 1.2 + 0.2,
+    b: Math.random() * 0.8 + 0.2,
+    ph: Math.random() * TAU,
+    sp: Math.random() * 2 + 0.5,
+  }));
+
+  // 상태
+  let running = false;
+  let startTime = 0;
+  let elapsed = 0;
+  let laps = [];          // { dur, a, rf, born }
+  let lastLapTotal = 0;
+  let collapseStart = null;
+  let flashStart = null;
+
+  function total() {
+    return running ? elapsed + (performance.now() - startTime) : elapsed;
+  }
+
+  function format(ms) {
+    const totalCs = Math.floor(ms / 10);
+    const cs = totalCs % 100;
+    const totalSec = Math.floor(totalCs / 100);
+    const pad = n => String(n).padStart(2, '0');
+    const h = Math.floor(totalSec / 3600);
+    const main = (h ? h + ':' : '') + pad(Math.floor(totalSec / 60) % 60) + ':' + pad(totalSec % 60);
+    return { main, cs: '.' + pad(cs) };
+  }
+
+  // 공전 각도: 12시 방향에서 시계 방향으로
+  function orbitAngle(t, period) {
+    return -Math.PI / 2 + ((t % period) / period) * TAU;
+  }
+
+  // ---------- 소리: 랩마다 펜타토닉 음 하나 ----------
+  const SCALE = [261.63, 293.66, 329.63, 392.0, 440.0, 523.25, 587.33, 659.25, 783.99, 880.0];
+  let actx = null;
+  let soundOn = true;
+
+  function tone(freq, dur = 1.6, vol = 0.14) {
+    if (!soundOn) return;
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const t0 = actx.currentTime;
+    [[1, 'sine', vol], [2, 'triangle', vol * 0.25]].forEach(([mul, type, v]) => {
+      const o = actx.createOscillator();
+      const g = actx.createGain();
+      o.type = type;
+      o.frequency.value = freq * mul;
+      g.gain.setValueAtTime(0, t0);
+      g.gain.linearRampToValueAtTime(v, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g).connect(actx.destination);
+      o.start(t0);
+      o.stop(t0 + dur + 0.05);
+    });
+  }
+
+  // 빠른 랩일수록 높은 음
+  function lapNote(dur) {
+    if (laps.length < 2) return SCALE[5];
+    const avg = laps.reduce((s, l) => s + l.dur, 0) / laps.length;
+    const idx = Math.round(5 + (1 - dur / avg) * 8);
+    return SCALE[Math.max(0, Math.min(SCALE.length - 1, idx))];
+  }
+
+  // ---------- 별자리 이름 ----------
+  const ADJ = ['고요한', '떠도는', '잠든', '노래하는', '반짝이는', '수줍은', '길 잃은', '용감한', '느긋한', '꿈꾸는', '춤추는', '외로운'];
+  const NOUN = ['고래', '여우', '등대', '종이배', '고양이', '나비', '기차', '해파리', '부엉이', '민들레', '우산', '토끼'];
+
+  function constellationName() {
+    let h = 7;
+    for (const l of laps) h = (h * 31 + Math.floor(l.dur / 10)) >>> 0;
+    return ADJ[h % ADJ.length] + ' ' + NOUN[Math.floor(h / 13) % NOUN.length] + '자리';
+  }
+
+  // ---------- 그리기 ----------
+  function glow(x, y, r, color, alpha = 1) {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r * 4);
+    g.addColorStop(0, color);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.globalAlpha = alpha * 0.45;
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r * 4, 0, TAU); ctx.fill();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  function draw() {
+    // rAF 타임스탬프는 이벤트에서 찍은 performance.now()보다 이를 수 있어 직접 측정
+    const now = performance.now();
+    const t = total();
+
+    // 리셋 시 모든 것이 태양으로 빨려 들어감
+    let shrink = 1;
+    if (collapseStart !== null) {
+      const k = Math.min(1, (now - collapseStart) / 900);
+      shrink = 1 - k * k * k;
+      if (k >= 1) finishReset(now);
+    }
+
+    // 배경
+    const bg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(W, H) * 0.8);
+    bg.addColorStop(0, '#0e1236');
+    bg.addColorStop(1, '#03040a');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.fillStyle = '#fff';
+    for (const s of bgStars) {
+      ctx.globalAlpha = s.b * (0.4 + 0.6 * (0.5 + 0.5 * Math.sin(now * 0.001 * s.sp + s.ph)));
+      ctx.beginPath(); ctx.arc(s.x * W, s.y * H, s.r, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    const orbits = [
+      { rf: 0.32, period: 43200000, color: '#ffb547', size: 0.045 },
+      { rf: 0.56, period: 3600000,  color: '#b48cff', size: 0.036 },
+      { rf: 0.80, period: 60000,    color: '#5fe0ff', size: 0.03 },
+    ];
+
+    // 궤도와 진행 호
+    ctx.lineWidth = 1;
+    for (const o of orbits) {
+      const r = o.rf * R * shrink;
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, TAU); ctx.stroke();
+      if (t > 0) {
+        ctx.strokeStyle = o.color;
+        ctx.globalAlpha = 0.45;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI / 2, orbitAngle(t, o.period)); ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.lineWidth = 1;
+      }
+    }
+
+    // 별자리: 랩마다 찍힌 별을 선으로 잇기
+    const pts = laps.map(l => ({
+      x: cx + Math.cos(l.a) * l.rf * R * shrink,
+      y: cy + Math.sin(l.a) * l.rf * R * shrink,
+      l,
+    }));
+    ctx.strokeStyle = 'rgba(255,230,190,0.35)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < pts.length; i++) {
+      const p = Math.min(1, (now - pts[i].l.born) / 600);
+      const a = pts[i - 1], b = pts[i];
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(a.x + (b.x - a.x) * p, a.y + (b.y - a.y) * p);
+      ctx.stroke();
+    }
+    const durs = laps.map(l => l.dur);
+    const best = Math.min(...durs), worst = Math.max(...durs);
+    for (const p of pts) {
+      const age = now - p.l.born;
+      let color = '#ffffff';
+      if (laps.length >= 2 && p.l.dur === best) color = '#ffd36b';
+      else if (laps.length >= 2 && p.l.dur === worst) color = '#7aa8ff';
+      const twinkle = 0.8 + 0.2 * Math.sin(now * 0.004 + p.l.a * 10);
+      glow(p.x, p.y, Math.min(1, age / 300) * 3 * twinkle, color);
+      if (age < 900) {
+        ctx.strokeStyle = color;
+        ctx.globalAlpha = 1 - age / 900;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 4 + age * 0.05, 0, TAU); ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // 행성
+    for (const o of orbits) {
+      const a = orbitAngle(t, o.period);
+      const r = o.rf * R * shrink;
+      const px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r;
+      glow(px, py, Math.max(3, o.size * R), o.color);
+      if (o.period === 60000) {
+        const ma = orbitAngle(t, 1000);
+        const mr = R * 0.075 * shrink;
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.beginPath(); ctx.arc(px, py, mr, 0, TAU); ctx.stroke();
+        glow(px + Math.cos(ma) * mr, py + Math.sin(ma) * mr, Math.max(1.5, R * 0.011), '#e6f7ff');
+      }
+    }
+
+    // 태양: 실행 중에는 매 초 고동침
+    const beat = running ? Math.pow(1 - (t % 1000) / 1000, 4) : 0;
+    const breathe = !running && t > 0 ? 0.04 * Math.sin(now * 0.002) : 0;
+    const sunR = R * 0.085 * (1 + 0.18 * beat + breathe);
+    const sg = ctx.createRadialGradient(cx, cy, 0, cx, cy, sunR * 3.5);
+    sg.addColorStop(0, 'rgba(255,240,200,0.9)');
+    sg.addColorStop(0.3, 'rgba(255,170,80,0.35)');
+    sg.addColorStop(1, 'rgba(255,120,40,0)');
+    ctx.fillStyle = sg;
+    ctx.beginPath(); ctx.arc(cx, cy, sunR * 3.5, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#fff6df';
+    ctx.beginPath(); ctx.arc(cx, cy, sunR, 0, TAU); ctx.fill();
+
+    // 리셋 직후 빅뱅 섬광
+    if (flashStart !== null) {
+      const k = (now - flashStart) / 700;
+      if (k >= 1) flashStart = null;
+      else {
+        ctx.fillStyle = 'rgba(255,250,235,' + (1 - k) * 0.8 + ')';
+        ctx.beginPath(); ctx.arc(cx, cy, R * 1.6 * Math.sqrt(k) + 1, 0, TAU); ctx.fill();
+      }
+    }
+
+    // 숫자 표시
+    const f = format(t);
+    display.textContent = f.main + f.cs;
+    drawDigits(now, f, beat);
+
+    requestAnimationFrame(draw);
+  }
+
+  // ---------- 별빛 숫자: 각 숫자는 별 입자들이 모여 만든 모양 ----------
+  const dcv = document.getElementById('digits');
+  const dctx = dcv.getContext('2d');
+  const GLYPH_W = 50, GLYPH_H = 80, SLOT_GAP = 6, COLON_W = 22, MS_W = 64;
+  const PER_DIGIT = 72;
+  // 시·분·초 자리 색은 각 행성 색과 맞춤
+  const GROUP_COLORS = ['#7fe9ff', '#c9a8ff', '#ffc46b'];
+  let DW, DH;
+
+  function resizeDigits() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    DW = dcv.clientWidth; DH = dcv.clientHeight;
+    dcv.width = DW * dpr; dcv.height = DH * dpr;
+    dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  addEventListener('resize', resizeDigits);
+  resizeDigits();
+
+  // 0~9 글리프를 오프스크린에 그려서 입자가 앉을 점을 뽑아 둠
+  const GLYPHS = (() => {
+    const c = document.createElement('canvas');
+    c.width = GLYPH_W * 2; c.height = GLYPH_H * 2;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.fillStyle = '#fff';
+    g.font = '600 ' + Math.round(GLYPH_H * 2.1) + 'px system-ui, "Segoe UI", sans-serif';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    const out = [];
+    for (let d = 0; d <= 9; d++) {
+      g.clearRect(0, 0, c.width, c.height);
+      g.fillText(String(d), c.width / 2, c.height / 2 + GLYPH_H * 0.12);
+      const data = g.getImageData(0, 0, c.width, c.height).data;
+      const pts = [];
+      for (let y = 0; y < c.height; y += 4)
+        for (let x = 0; x < c.width; x += 4)
+          if (data[(y * c.width + x) * 4 + 3] > 128) pts.push([x / 2 - GLYPH_W / 2, y / 2 - GLYPH_H / 2]);
+      const pick = [];
+      for (let i = 0; i < PER_DIGIT; i++) pick.push(pts[Math.floor(i * pts.length / PER_DIGIT)]);
+      out.push(pick);
+    }
+    return out;
+  })();
+
+  let slots = [];      // { ch, x, color, particles }
+  let digitsWidth = 0;
+
+  function groupColor(str, i) {
+    let group = 0;
+    for (let j = i + 1; j < str.length; j++) if (str[j] === ':') group++;
+    return GROUP_COLORS[Math.min(group, GROUP_COLORS.length - 1)];
+  }
+
+  function retarget(slot, digit, kick) {
+    const pts = GLYPHS[digit];
+    slot.particles.forEach((p, i) => {
+      p.tx = pts[i][0];
+      p.ty = pts[i][1];
+      p.vx += (Math.random() - 0.5) * kick;
+      p.vy += (Math.random() - 0.5) * kick;
+    });
+  }
+
+  function rebuildSlots(str) {
+    slots = [];
+    let x = 0;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      const w = ch === ':' ? COLON_W : GLYPH_W + SLOT_GAP;
+      const slot = { ch, x: x + w / 2, color: groupColor(str, i), particles: [] };
+      if (ch !== ':') {
+        // 처음엔 흩어진 별이 숫자 모양으로 모여듦
+        for (let k = 0; k < PER_DIGIT; k++) {
+          slot.particles.push({
+            x: (Math.random() - 0.5) * 300, y: (Math.random() - 0.5) * 160,
+            vx: 0, vy: 0, tx: 0, ty: 0,
+            r: Math.random() * 0.9 + 0.9,
+            ph: Math.random() * TAU,
+          });
+        }
+        retarget(slot, +ch, 0);
+      }
+      slots.push(slot);
+      x += w;
+    }
+    digitsWidth = x + MS_W;
+  }
+
+  function drawDigits(now, f, beat) {
+    const str = f.main;
+    if (slots.length !== str.length || slots.some((s, i) => (s.ch === ':') !== (str[i] === ':'))) {
+      rebuildSlots(str);
+    }
+    slots.forEach((s, i) => {
+      if (s.ch !== str[i]) {
+        s.ch = str[i];
+        retarget(s, +s.ch, 5);
+      }
+    });
+
+    const scale = Math.min(1, (DW - 8) / digitsWidth, DH / (GLYPH_H + 16));
+    dctx.clearRect(0, 0, DW, DH);
+    dctx.save();
+    dctx.translate((DW - digitsWidth * scale) / 2, DH / 2);
+    dctx.scale(scale, scale);
+    dctx.globalCompositeOperation = 'lighter';
+
+    for (const s of slots) {
+      dctx.fillStyle = s.color;
+      if (s.ch === ':') {
+        dctx.globalAlpha = 0.5 + 0.5 * beat;
+        for (const dy of [-GLYPH_H * 0.17, GLYPH_H * 0.17]) {
+          dctx.beginPath(); dctx.arc(s.x, dy, 3 + beat * 1.5, 0, TAU); dctx.fill();
+        }
+        continue;
+      }
+      for (const p of s.particles) {
+        p.vx = (p.vx + (p.tx - p.x) * 0.09) * 0.75;
+        p.vy = (p.vy + (p.ty - p.y) * 0.09) * 0.75;
+        p.x += p.vx;
+        p.y += p.vy;
+        const tw = 0.6 + 0.4 * Math.sin(now * 0.003 + p.ph);
+        const px = s.x + p.x + Math.sin(now * 0.0013 + p.ph) * 0.6;
+        const py = p.y + Math.cos(now * 0.0011 + p.ph) * 0.6;
+        dctx.globalAlpha = 0.13 * tw;
+        dctx.beginPath(); dctx.arc(px, py, p.r * 3.2, 0, TAU); dctx.fill();
+        dctx.globalAlpha = tw;
+        dctx.beginPath(); dctx.arc(px, py, p.r, 0, TAU); dctx.fill();
+      }
+    }
+
+    // 1/100초는 너무 빨리 바뀌어 입자 대신 은은한 글씨로
+    dctx.globalCompositeOperation = 'source-over';
+    dctx.globalAlpha = 0.75;
+    dctx.fillStyle = '#dfe5ff';
+    dctx.shadowColor = 'rgba(160,200,255,0.8)';
+    dctx.shadowBlur = 10;
+    dctx.font = '200 36px system-ui, "Segoe UI", sans-serif';
+    dctx.textBaseline = 'alphabetic';
+    dctx.fillText(f.cs, digitsWidth - MS_W + 4, GLYPH_H * 0.36);
+    dctx.restore();
+  }
+
+  // ---------- 조작 ----------
+  function renderLaps() {
+    lapsBox.hidden = laps.length === 0;
+    lapList.innerHTML = '';
+    const durs = laps.map(l => l.dur);
+    const best = Math.min(...durs), worst = Math.max(...durs);
+    for (let i = laps.length - 1; i >= 0; i--) {
+      const li = document.createElement('li');
+      if (laps.length >= 2 && laps[i].dur === best) li.className = 'best';
+      else if (laps.length >= 2 && laps[i].dur === worst) li.className = 'worst';
+      const f = format(laps[i].dur);
+      li.innerHTML = '<span>✦ ' + (i + 1) + '</span><span>' + f.main + f.cs + '</span>';
+      lapList.appendChild(li);
+    }
+    nameEl.style.opacity = 1;
+    nameEl.textContent = laps.length >= 3 ? '✦ ' + constellationName() + ' ✦' : '';
+  }
+
+  function startStop() {
+    if (collapseStart !== null) return;
+    if (running) {
+      elapsed += performance.now() - startTime;
+      running = false;
+      tone(SCALE[0], 1.2, 0.08);
+    } else {
+      startTime = performance.now();
+      running = true;
+      tone(SCALE[2], 1.2, 0.08);
+    }
+    updateButtons();
+  }
+
+  function lap() {
+    const tt = total();
+    const dur = tt - lastLapTotal;
+    lastLapTotal = tt;
+    tone(lapNote(dur));
+    laps.push({
+      dur,
+      a: orbitAngle(tt, 60000),
+      rf: 0.62 + 0.34 * ((dur % 1000) / 1000),   // 랩 시간의 끝자리로 별 위치가 흩어짐
+      born: performance.now(),
+    });
+    renderLaps();
+  }
+
+  function reset() {
+    if (running || elapsed === 0 || collapseStart !== null) return;
+    collapseStart = performance.now();
+    nameEl.style.opacity = 0;
+    tone(130.81, 2.2, 0.18);
+    updateButtons();
+  }
+
+  function finishReset(now) {
+    collapseStart = null;
+    flashStart = now;
+    elapsed = 0;
+    laps = [];
+    lastLapTotal = 0;
+    renderLaps();
+    updateButtons();
+  }
+
+  function updateButtons() {
+    startStopBtn.textContent = running ? '정지' : (elapsed > 0 ? '계속' : '시작');
+    startStopBtn.className = running ? 'stop' : 'primary';
+    lapResetBtn.textContent = running || elapsed === 0 ? '랩' : '리셋';
+    lapResetBtn.disabled = collapseStart !== null || (!running && elapsed === 0);
+  }
+
+  function toggleSound() {
+    soundOn = !soundOn;
+    soundBtn.classList.toggle('off', !soundOn);
+  }
+
+  startStopBtn.addEventListener('click', startStop);
+  lapResetBtn.addEventListener('click', () => running ? lap() : reset());
+  soundBtn.addEventListener('click', toggleSound);
+
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); startStop(); }
+    else if (e.key === 'l' || e.key === 'L') { if (running) lap(); }
+    else if (e.key === 'r' || e.key === 'R') reset();
+    else if (e.key === 'm' || e.key === 'M') toggleSound();
+  });
+
+  requestAnimationFrame(draw);
+</script>
+</body>
+</html>

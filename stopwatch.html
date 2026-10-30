@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>스탑워치</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --card: #ffffff;
+    --text: #1d1f23;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #2563eb;
+    --danger: #dc2626;
+    --best: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111316;
+      --card: #1b1e23;
+      --text: #f1f3f5;
+      --muted: #9aa1ab;
+      --line: #2c3037;
+      --accent: #3b82f6;
+      --danger: #ef4444;
+      --best: #22c55e;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    padding: 16px;
+  }
+  .card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 32px 24px 24px;
+  }
+  .time {
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(44px, 14vw, 64px);
+    font-weight: 300;
+    text-align: center;
+    letter-spacing: 1px;
+  }
+  .time .ms { color: var(--muted); }
+  .buttons {
+    display: flex;
+    gap: 12px;
+    margin: 28px 0 20px;
+  }
+  button {
+    flex: 1;
+    height: 52px;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.stop { background: var(--danger); border-color: var(--danger); color: #fff; }
+  ol {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 260px;
+    overflow-y: auto;
+  }
+  li {
+    display: flex;
+    justify-content: space-between;
+    padding: 10px 4px;
+    border-top: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+  }
+  li .label { color: var(--muted); }
+  li.best { color: var(--best); }
+  li.worst { color: var(--danger); }
+  .hint { text-align: center; color: var(--muted); font-size: 12px; margin-top: 16px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="time" id="display">00:00<span class="ms">.00</span></div>
+    <div class="buttons">
+      <button id="lapReset" disabled>랩</button>
+      <button id="startStop" class="primary">시작</button>
+    </div>
+    <ol id="laps"></ol>
+    <div class="hint">Space: 시작/정지 · L: 랩 · R: 리셋</div>
+  </div>
+
+<script>
+  const display = document.getElementById('display');
+  const startStopBtn = document.getElementById('startStop');
+  const lapResetBtn = document.getElementById('lapReset');
+  const lapList = document.getElementById('laps');
+
+  let running = false;
+  let startTime = 0;   // 현재 구간 시작 시각
+  let elapsed = 0;     // 정지 전까지 누적 시간
+  let laps = [];       // 각 랩의 소요 시간
+  let lastLapTotal = 0;
+  let rafId = null;
+
+  function format(ms) {
+    const totalCs = Math.floor(ms / 10);
+    const cs = totalCs % 100;
+    const totalSec = Math.floor(totalCs / 100);
+    const s = totalSec % 60;
+    const m = Math.floor(totalSec / 60) % 60;
+    const h = Math.floor(totalSec / 3600);
+    const pad = n => String(n).padStart(2, '0');
+    const main = (h ? h + ':' : '') + pad(m) + ':' + pad(s);
+    return { main, cs: '.' + pad(cs) };
+  }
+
+  function currentTotal() {
+    return running ? elapsed + (performance.now() - startTime) : elapsed;
+  }
+
+  function render() {
+    const t = format(currentTotal());
+    display.innerHTML = t.main + '<span class="ms">' + t.cs + '</span>';
+  }
+
+  function tick() {
+    render();
+    rafId = requestAnimationFrame(tick);
+  }
+
+  function renderLaps() {
+    lapList.innerHTML = '';
+    const showExtremes = laps.length >= 2;
+    const min = Math.min(...laps), max = Math.max(...laps);
+    for (let i = laps.length - 1; i >= 0; i--) {
+      const li = document.createElement('li');
+      if (showExtremes && laps[i] === min) li.className = 'best';
+      else if (showExtremes && laps[i] === max) li.className = 'worst';
+      const t = format(laps[i]);
+      li.innerHTML = '<span class="label">랩 ' + (i + 1) + '</span><span>' + t.main + t.cs + '</span>';
+      lapList.appendChild(li);
+    }
+  }
+
+  function startStop() {
+    if (running) {
+      elapsed += performance.now() - startTime;
+      running = false;
+      cancelAnimationFrame(rafId);
+      render();
+    } else {
+      startTime = performance.now();
+      running = true;
+      tick();
+    }
+    updateButtons();
+  }
+
+  function lapOrReset() {
+    if (running) {
+      const total = currentTotal();
+      laps.push(total - lastLapTotal);
+      lastLapTotal = total;
+      renderLaps();
+    } else if (elapsed > 0) {
+      elapsed = 0;
+      laps = [];
+      lastLapTotal = 0;
+      renderLaps();
+      render();
+    }
+    updateButtons();
+  }
+
+  function updateButtons() {
+    startStopBtn.textContent = running ? '정지' : (elapsed > 0 ? '계속' : '시작');
+    startStopBtn.className = running ? 'stop' : 'primary';
+    lapResetBtn.textContent = running || elapsed === 0 ? '랩' : '리셋';
+    lapResetBtn.disabled = !running && elapsed === 0;
+  }
+
+  startStopBtn.addEventListener('click', startStop);
+  lapResetBtn.addEventListener('click', lapOrReset);
+
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); startStop(); }
+    else if (e.key === 'l' || e.key === 'L') { if (running) lapOrReset(); }
+    else if (e.key === 'r' || e.key === 'R') { if (!running) lapOrReset(); }
+  });
+</script>
+</body>
+</html>
